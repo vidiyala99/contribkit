@@ -1,6 +1,8 @@
 import asyncio
 import httpx
 from contribkit.config import get_settings
+from contribkit.exceptions import GitHubAPIError, RateLimitError, RepoNotFoundError
+from contribkit.ingestion.cache import cached
 
 _BASE = "https://api.github.com"
 
@@ -13,10 +15,24 @@ def _headers() -> dict:
     }
 
 
+def _raise_for_status(r: httpx.Response, repo: str = "") -> None:
+    if r.status_code == 401:
+        raise GitHubAPIError("GitHub authentication failed — check your GITHUB_TOKEN in .env")
+    if r.status_code == 404:
+        raise RepoNotFoundError(f"Repository '{repo}' not found — check the slug and your token permissions")
+    if r.status_code in (403, 429):
+        reset = r.headers.get("x-ratelimit-reset")
+        hint = f" (resets at epoch {reset})" if reset else ""
+        raise RateLimitError(f"GitHub rate limit exceeded{hint}")
+    if r.status_code >= 400:
+        raise GitHubAPIError(f"GitHub API error {r.status_code}: {r.text[:200]}")
+
+
+@cached("repo_info")
 async def fetch_repo_info(repo: str) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{_BASE}/repos/{repo}", headers=_headers())
-        r.raise_for_status()
+        _raise_for_status(r, repo)
         d = r.json()
         return {
             "name": d["name"],
@@ -29,6 +45,7 @@ async def fetch_repo_info(repo: str) -> dict:
         }
 
 
+@cached("issues")
 async def fetch_issues(repo: str, limit: int = 50) -> list[dict]:
     async with httpx.AsyncClient() as client:
         r = await client.get(
@@ -36,7 +53,7 @@ async def fetch_issues(repo: str, limit: int = 50) -> list[dict]:
             headers=_headers(),
             params={"state": "open", "per_page": min(limit, 100), "sort": "updated"},
         )
-        r.raise_for_status()
+        _raise_for_status(r, repo)
         return [
             {
                 "number": i["number"],
@@ -49,10 +66,11 @@ async def fetch_issues(repo: str, limit: int = 50) -> list[dict]:
                 "url": i["html_url"],
             }
             for i in r.json()
-            if "pull_request" not in i  # issues endpoint includes PRs
+            if "pull_request" not in i
         ]
 
 
+@cached("prs")
 async def fetch_prs(repo: str, state: str = "closed", limit: int = 30) -> list[dict]:
     async with httpx.AsyncClient() as client:
         r = await client.get(
@@ -60,7 +78,7 @@ async def fetch_prs(repo: str, state: str = "closed", limit: int = 30) -> list[d
             headers=_headers(),
             params={"state": state, "per_page": min(limit, 100), "sort": "updated"},
         )
-        r.raise_for_status()
+        _raise_for_status(r, repo)
         return [
             {
                 "number": p["number"],

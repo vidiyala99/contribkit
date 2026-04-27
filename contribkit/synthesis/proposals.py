@@ -14,6 +14,7 @@ Analyze this repository and generate 5 actionable contribution proposals. Each p
 - Fix a real gap or pain point surfaced by multiple issues
 - Add a feature that has strong community demand (comments/reactions)
 - Improve developer experience based on recurring PR patterns
+- Address architectural gaps visible in the source code
 
 ## Repo: {repo}
 {repo_info}
@@ -26,10 +27,10 @@ Analyze this repository and generate 5 actionable contribution proposals. Each p
 
 ## Open PRs (avoid duplicating work already in progress)
 {open_prs}
-
+{source_section}
 For each proposal output a JSON object with:
 - title: short PR title
-- problem: what's broken or missing (cite issue numbers where relevant)
+- problem: what's broken or missing (cite issue numbers or file/function names where relevant)
 - approach: concrete implementation plan (2-4 sentences)
 - files: list of files/modules likely involved
 - effort: "low" | "medium" | "high"
@@ -61,13 +62,19 @@ def generate_proposals(
     issues: list[dict],
     merged_prs: list[dict],
     open_prs: list[dict],
+    source_code: str | None = None,
 ) -> list[dict]:
+    source_section = ""
+    if source_code:
+        source_section = f"\n## Source Code\n{source_code}\n"
+
     prompt = _PROMPT.format(
         repo=repo,
         repo_info=json.dumps(repo_info, indent=2),
         issues=_fmt_issues(issues),
         merged_prs=_fmt_prs(merged_prs),
         open_prs=_fmt_prs(open_prs),
+        source_section=source_section,
     )
 
     response = _client().messages.create(
@@ -79,6 +86,11 @@ def generate_proposals(
     raw = response.content[0].text
     match = re.search(r"<proposals>(.*?)</proposals>", raw, re.DOTALL)
     if not match:
-        raise ValueError(f"No <proposals> tag found in response:\n{raw[:500]}")
+        from contribkit.exceptions import LLMParseError
+        raise LLMParseError(f"Model response missing <proposals> tag. Got:\n{raw[:500]}")
 
-    return json.loads(match.group(1).strip())
+    try:
+        return json.loads(match.group(1).strip())
+    except json.JSONDecodeError as e:
+        from contribkit.exceptions import LLMParseError
+        raise LLMParseError(f"Failed to parse proposals JSON: {e}")

@@ -1,12 +1,14 @@
 import asyncio
 import sys
-import io
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from contribkit.exceptions import ContribKitError
+from contribkit.ingestion import cache as _cache
 from contribkit.ingestion.github import fetch_all
+from contribkit.ingestion.source import read_source_files
 from contribkit.synthesis.proposals import generate_proposals
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -22,17 +24,22 @@ EFFORT_COLOR = {"low": "green", "medium": "yellow", "high": "red"}
 def analyze(
     repo: str = typer.Argument(..., help="GitHub repo slug, e.g. dagster-io/dagster"),
     issues: int = typer.Option(60, "--issues", "-n", help="Max issues to fetch"),
+    source: str = typer.Option(None, "--source", "-s", help="Path to local source directory to include in analysis"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Bypass disk cache and fetch fresh data"),
 ):
     """Fetch repo signals and generate ranked contribution proposals."""
+
+    _cache.set_bypass(no_cache)
 
     async def run():
         with console.status(f"[bold blue]Fetching signals from {repo}..."):
             repo_info, open_issues, merged_prs, open_prs = await fetch_all(repo)
 
+        cache_hint = " [dim](cached)[/dim]" if not no_cache else ""
         console.print(
             f"\n[bold]{repo_info['name']}[/bold]  "
             f"stars:{repo_info['stars']:,}  forks:{repo_info['forks']:,}  "
-            f"open issues:{repo_info['open_issues_count']}"
+            f"open issues:{repo_info['open_issues_count']}{cache_hint}"
         )
         console.print(f"[dim]{repo_info['description']}[/dim]\n")
         console.print(
@@ -41,8 +48,13 @@ def analyze(
             f"[cyan]{len(open_prs)}[/cyan] open PRs\n"
         )
 
+        source_code = None
+        if source:
+            source_code = read_source_files(source)
+            console.print(f"[dim]Read source from {source}[/dim]\n")
+
         with console.status("[bold blue]Generating proposals with Claude..."):
-            proposals = generate_proposals(repo, repo_info, open_issues, merged_prs, open_prs)
+            proposals = generate_proposals(repo, repo_info, open_issues, merged_prs, open_prs, source_code)
 
         console.print(f"[bold green]{len(proposals)} proposals generated[/bold green]\n")
 
@@ -67,7 +79,11 @@ def analyze(
             console.print(Panel(body, title=f"[bold]#{idx}  {p['title']}[/bold]", border_style="blue", expand=False))
             console.print()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except ContribKitError as e:
+        console.print(Panel(f"[red]{e}[/red]", title="[bold red]Error[/bold red]", border_style="red"))
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

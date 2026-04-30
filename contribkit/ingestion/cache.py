@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import time
@@ -17,27 +18,58 @@ def _key(*args, **kwargs) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:20]
 
 
+def _repo_shard(cache_dir: str, repo: str) -> Path:
+    safe = repo.replace("/", "__")
+    return Path(cache_dir) / "cache" / f"{safe}.json"
+
+
+@contextlib.contextmanager
+def _lock(path: Path):
+    lock_path = path.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_path, "w")
+    try:
+        try:
+            import fcntl
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            yield
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+        except ImportError:
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            yield
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        lock_file.close()
+
+
 class _DiskCache:
     def __init__(self, path: Path, ttl: int):
         self.path = path
         self.ttl = ttl
-        self._data: dict = {}
-        if path.exists():
+
+    def _load(self) -> dict:
+        if self.path.exists():
             try:
-                self._data = json.loads(path.read_text(encoding="utf-8"))
+                return json.loads(self.path.read_text(encoding="utf-8"))
             except Exception:
                 pass
+        return {}
 
     def get(self, key: str):
-        entry = self._data.get(key)
+        with _lock(self.path):
+            data = self._load()
+        entry = data.get(key)
         if entry and (time.time() - entry["ts"]) < self.ttl:
             return entry["v"]
         return None
 
     def set(self, key: str, value) -> None:
-        self._data[key] = {"ts": time.time(), "v": value}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._data), encoding="utf-8")
+        with _lock(self.path):
+            data = self._load()
+            data[key] = {"ts": time.time(), "v": value}
+            self.path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def cached(fetch_type: str):
@@ -48,7 +80,10 @@ def cached(fetch_type: str):
                 return await fn(*args, **kwargs)
             from contribkit.config import get_settings
             s = get_settings()
-            cache = _DiskCache(Path(s.cache_dir) / "cache.json", s.cache_ttl)
+            # Infer repo from first positional arg (always the repo slug)
+            repo = args[0] if args else "default"
+            shard = _repo_shard(s.cache_dir, repo)
+            cache = _DiskCache(shard, s.cache_ttl)
             key = f"{fetch_type}:{_key(*args, **kwargs)}"
             hit = cache.get(key)
             if hit is not None:
@@ -58,3 +93,25 @@ def cached(fetch_type: str):
             return result
         return wrapper
     return decorator
+
+
+def clear(repo: str | None = None) -> list[str]:
+    """Delete cache shard(s). Returns list of deleted file paths."""
+    from contribkit.config import get_settings
+    cache_root = Path(get_settings().cache_dir) / "cache"
+    deleted = []
+    if repo:
+        shard = _repo_shard(get_settings().cache_dir, repo)
+        if shard.exists():
+            shard.unlink()
+            deleted.append(str(shard))
+        lock = shard.with_suffix(".lock")
+        if lock.exists():
+            lock.unlink()
+    else:
+        for f in cache_root.glob("*.json"):
+            f.unlink()
+            deleted.append(str(f))
+        for f in cache_root.glob("*.lock"):
+            f.unlink()
+    return deleted

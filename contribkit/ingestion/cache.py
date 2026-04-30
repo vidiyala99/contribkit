@@ -1,9 +1,11 @@
-import contextlib
 import hashlib
 import json
 import time
 from functools import wraps
 from pathlib import Path
+
+from contribkit.utils.filelock import file_lock
+from contribkit.utils.validation import slug_to_filename
 
 _bypass = False
 
@@ -19,28 +21,7 @@ def _key(*args, **kwargs) -> str:
 
 
 def _repo_shard(cache_dir: str, repo: str) -> Path:
-    safe = repo.replace("/", "__")
-    return Path(cache_dir) / "cache" / f"{safe}.json"
-
-
-@contextlib.contextmanager
-def _lock(path: Path):
-    lock_path = path.with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_file = open(lock_path, "w")
-    try:
-        try:
-            import fcntl
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            yield
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-        except ImportError:
-            import msvcrt
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-            yield
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-    finally:
-        lock_file.close()
+    return Path(cache_dir) / "cache" / f"{slug_to_filename(repo)}.json"
 
 
 class _DiskCache:
@@ -57,7 +38,7 @@ class _DiskCache:
         return {}
 
     def get(self, key: str):
-        with _lock(self.path):
+        with file_lock(self.path):
             data = self._load()
         entry = data.get(key)
         if entry and (time.time() - entry["ts"]) < self.ttl:
@@ -66,7 +47,7 @@ class _DiskCache:
 
     def set(self, key: str, value) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with _lock(self.path):
+        with file_lock(self.path):
             data = self._load()
             data[key] = {"ts": time.time(), "v": value}
             self.path.write_text(json.dumps(data), encoding="utf-8")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -15,7 +16,26 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env"}
 
+    @model_validator(mode="after")
+    def _require_keys(self) -> "Settings":
+        missing = [name for name, val in [
+            ("GITHUB_TOKEN", self.github_token),
+            ("ANTHROPIC_API_KEY", self.anthropic_api_key),
+        ] if not val]
+        if missing:
+            raise ValueError(
+                f"Missing required environment variable(s): {', '.join(missing)}. "
+                "Set them in your .env file or environment."
+            )
+        return self
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    from pydantic import ValidationError
+    from contribkit.exceptions import ConfigurationError
+    try:
+        return Settings()
+    except ValidationError as e:
+        msgs = "; ".join(err["msg"] for err in e.errors())
+        raise ConfigurationError(msgs) from e

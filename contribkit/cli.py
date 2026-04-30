@@ -7,6 +7,7 @@ from rich.text import Text
 
 from contribkit.config import get_settings
 from contribkit.exceptions import ContribKitError
+from contribkit.utils.validation import parse_repo_slug
 from contribkit.ingestion import cache as _cache
 from contribkit.ingestion.cache import clear as cache_clear
 from contribkit.ingestion.github import fetch_all
@@ -34,6 +35,11 @@ def analyze(
     focus: list[str] = typer.Option([], "--focus", "-f", help="Glob pattern(s) to scope proposals to specific modules (e.g. 'contribkit/ingestion/*.py')"),
 ):
     """Fetch repo signals and generate ranked contribution proposals."""
+    try:
+        parse_repo_slug(repo)
+    except ValueError as e:
+        console.print(Panel(f"[red]{e}[/red]", title="[bold red]Invalid repo slug[/bold red]", border_style="red"))
+        raise SystemExit(1)
 
     _cache.set_bypass(no_cache)
 
@@ -131,6 +137,12 @@ def index(
     force: bool = typer.Option(False, "--force", "-f", help="Rebuild even if graph already exists"),
 ):
     """Build a persistent codebase graph from local source (run once, reused by analyze)."""
+    try:
+        parse_repo_slug(repo)
+    except ValueError as e:
+        console.print(Panel(f"[red]{e}[/red]", title="[bold red]Invalid repo slug[/bold red]", border_style="red"))
+        raise SystemExit(1)
+
     if graph_exists(repo) and not force:
         g = load_graph(repo)
         import time as _time

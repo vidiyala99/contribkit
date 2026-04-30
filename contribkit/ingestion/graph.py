@@ -8,6 +8,7 @@ import anthropic
 
 from contribkit.config import get_settings
 from contribkit.ingestion.source import read_source_files
+from contribkit.utils.validation import slug_to_filename
 
 _GRAPH_PROMPT = """\
 You are a senior software architect performing a one-time deep analysis of a codebase.
@@ -37,8 +38,7 @@ def _graphs_dir() -> Path:
 
 
 def _graph_path(repo: str) -> Path:
-    safe = repo.replace("/", "__")
-    return _graphs_dir() / f"{safe}.json"
+    return _graphs_dir() / f"{slug_to_filename(repo)}.json"
 
 
 def graph_exists(repo: str) -> bool:

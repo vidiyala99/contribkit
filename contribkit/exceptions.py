@@ -12,3 +12,6 @@ class RepoNotFoundError(GitHubAPIError):
 
 class LLMParseError(ContribKitError):
     pass
+
+class ConfigurationError(ContribKitError):
+    pass

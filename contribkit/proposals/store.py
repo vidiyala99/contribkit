@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Literal
 
 from contribkit.config import get_settings
+from contribkit.utils.filelock import file_lock
+from contribkit.utils.validation import slug_to_filename
 
 Status = Literal["open", "in_progress", "done", "dismissed"]
 
 
 def _store_path(repo: str) -> Path:
-    safe = repo.replace("/", "__")
-    return Path(get_settings().cache_dir) / "proposals" / f"{safe}.json"
+    return Path(get_settings().cache_dir) / "proposals" / f"{slug_to_filename(repo)}.json"
 
 
 def _proposal_id(repo: str, title: str) -> str:
@@ -33,7 +34,8 @@ def _load(repo: str) -> dict[str, dict]:
 def _save(repo: str, store: dict[str, dict]) -> None:
     p = _store_path(repo)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(store, indent=2), encoding="utf-8")
+    with file_lock(p):
+        p.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
 
 def save_proposals(repo: str, proposals: list[dict], graph_analyzed_at: float | None = None) -> tuple[list[dict], list[dict]]:

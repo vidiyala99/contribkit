@@ -111,7 +111,7 @@ def generate_proposals(
 
     response = _client().messages.create(
         model=get_settings().anthropic_model,
-        max_tokens=2048 + num_proposals * 500,
+        max_tokens=min(4096 + num_proposals * 1200, 16000),
         messages=[{"role": "user", "content": prompt}],
     )
 

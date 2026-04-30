@@ -1,9 +1,10 @@
 import json
-import re
 import anthropic
 from pydantic import ValidationError
 from contribkit.config import get_settings
+from contribkit.exceptions import LLMParseError
 from contribkit.models import Proposal
+from contribkit.synthesis.parsing import extract_tagged_json
 
 
 def _client() -> anthropic.Anthropic:
@@ -109,34 +110,49 @@ def generate_proposals(
         num_proposals=num_proposals,
     )
 
-    response = _client().messages.create(
-        model=get_settings().anthropic_model,
-        max_tokens=min(4096 + num_proposals * 1200, 16000),
-        messages=[{"role": "user", "content": prompt}],
-    )
+    messages = [{"role": "user", "content": prompt}]
+    max_tokens = min(4096 + num_proposals * 1200, 16000)
+    last_error: LLMParseError | None = None
 
-    raw = response.content[0].text
-    match = re.search(r"<proposals>(.*?)</proposals>", raw, re.DOTALL)
-    if not match:
-        from contribkit.exceptions import LLMParseError
-        raise LLMParseError(f"Model response missing <proposals> tag. Got:\n{raw[:500]}")
+    for attempt in range(3):
+        response = _client().messages.create(
+            model=get_settings().anthropic_model,
+            max_tokens=max_tokens,
+            messages=messages,
+        )
+        raw = response.content[0].text
 
-    try:
-        raw_list = json.loads(match.group(1).strip())
-    except json.JSONDecodeError as e:
-        from contribkit.exceptions import LLMParseError
-        raise LLMParseError(f"Failed to parse proposals JSON: {e}")
-
-    validated = []
-    errors = []
-    for i, item in enumerate(raw_list):
         try:
-            validated.append(Proposal.model_validate(item).model_dump())
-        except ValidationError as e:
-            errors.append(f"proposal[{i}]: {e.error_count()} field error(s) — {e.errors()[0]['loc']} {e.errors()[0]['msg']}")
+            raw_list = extract_tagged_json(raw, "proposals")
+        except LLMParseError as e:
+            last_error = e
+            # Retry: show Claude what it returned and ask it to fix the format
+            messages = messages + [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": (
+                    "Your response could not be parsed as JSON inside <proposals>...</proposals> tags. "
+                    "Please rewrite your answer, this time wrapping a valid JSON array in "
+                    "<proposals>...</proposals> with no other text outside the tags."
+                )},
+            ]
+            continue
 
-    if errors:
-        from contribkit.exceptions import LLMParseError
-        raise LLMParseError("Proposal schema validation failed:\n" + "\n".join(errors))
+        if not isinstance(raw_list, list):
+            last_error = LLMParseError(f"Expected a JSON array, got {type(raw_list).__name__}")
+            continue
 
-    return validated
+        validated = []
+        errors = []
+        for i, item in enumerate(raw_list):
+            try:
+                validated.append(Proposal.model_validate(item).model_dump())
+            except ValidationError as e:
+                errors.append(f"proposal[{i}]: {e.errors()[0]['loc']} {e.errors()[0]['msg']}")
+
+        if errors:
+            last_error = LLMParseError("Proposal schema validation failed:\n" + "\n".join(errors))
+            continue
+
+        return validated
+
+    raise last_error

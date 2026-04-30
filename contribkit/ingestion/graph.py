@@ -7,7 +7,9 @@ from pathlib import Path
 import anthropic
 
 from contribkit.config import get_settings
+from contribkit.exceptions import LLMParseError
 from contribkit.ingestion.source import read_source_files
+from contribkit.synthesis.parsing import extract_tagged_json
 from contribkit.utils.validation import slug_to_filename
 
 _GRAPH_PROMPT = """\
@@ -74,18 +76,10 @@ def build_graph(repo: str, source_path: str) -> dict:
         messages=[{"role": "user", "content": _GRAPH_PROMPT.format(source=source)}],
     )
 
-    import re
     raw = response.content[0].text
-    match = re.search(r"<graph>(.*?)</graph>", raw, re.DOTALL)
-    if not match:
-        from contribkit.exceptions import LLMParseError
-        raise LLMParseError(f"Model response missing <graph> tag. Got:\n{raw[:500]}")
-
-    try:
-        data = json.loads(match.group(1).strip())
-    except json.JSONDecodeError as e:
-        from contribkit.exceptions import LLMParseError
-        raise LLMParseError(f"Failed to parse graph JSON: {e}")
+    data = extract_tagged_json(raw, "graph")
+    if not isinstance(data, dict):
+        raise LLMParseError(f"Expected a JSON object for graph, got {type(data).__name__}")
 
     graph = {
         "repo": repo,
